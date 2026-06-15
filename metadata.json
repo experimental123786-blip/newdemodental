@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Remix: Dental Clinic \u0026 Booking Portal",
+  "description": "An interactive premium dental clinic portal for scheduling clinical specialty checkups, reviewing board-certified orthodontists, and tracking local appointments inside an automated dashboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

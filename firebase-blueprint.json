@@ -1,0 +1,63 @@
+{
+  "entities": {
+    "Appointment": {
+      "title": "Appointment",
+      "description": "An appointment booked by a patient with a dentist for a specific dental service.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The unique ID for the appointment (APT-XXXX-XXXX)"
+        },
+        "serviceId": {
+          "type": "string",
+          "description": "The selected dental service identifier"
+        },
+        "dentistId": {
+          "type": "string",
+          "description": "The selected dentist identifier"
+        },
+        "date": {
+          "type": "string",
+          "description": "The appointment date in YYYY-MM-DD format"
+        },
+        "timeSlot": {
+          "type": "string",
+          "description": "The selected timeslot (e.g. 10:00 AM)"
+        },
+        "patientName": {
+          "type": "string",
+          "description": "Name of the patient"
+        },
+        "patientEmail": {
+          "type": "string",
+          "description": "Email address of the patient"
+        },
+        "patientPhone": {
+          "type": "string",
+          "description": "Phone number of the patient"
+        },
+        "notes": {
+          "type": "string",
+          "description": "User notes or symptoms for the visit"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["confirmed", "cancelled"],
+          "description": "Reservation status of the appointment"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "The timestamp of appointment creation"
+        }
+      },
+      "required": ["id", "serviceId", "dentistId", "date", "timeSlot", "patientName", "patientEmail", "patientPhone", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Collections of patient dental appointments"
+    }
+  }
+}

@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper: Valid ID validator for path parameters
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Helper: Extract incoming resource data
+    function incoming() {
+      return request.resource.data;
+    }
+
+    // Helper: Extract existing resource data
+    function existing() {
+      return resource.data;
+    }
+
+    // Helper: Validate exact shape and boundary criteria
+    function isValidAppointment(data) {
+      return data.keys().hasAll(['id', 'serviceId', 'dentistId', 'date', 'timeSlot', 'patientName', 'patientEmail', 'patientPhone', 'status', 'createdAt'])
+        && data.keys().size() <= 11
+        && data.id is string && data.id.size() <= 64
+        && data.serviceId is string && data.serviceId.size() <= 64
+        && data.dentistId is string && data.dentistId.size() <= 64
+        && data.date is string && data.date.size() == 10
+        && data.timeSlot is string && data.timeSlot.size() <= 32
+        && data.patientName is string && data.patientName.size() <= 128 && data.patientName.size() > 0
+        && data.patientEmail is string && data.patientEmail.size() <= 128 && data.patientEmail.size() > 0
+        && data.patientPhone is string && data.patientPhone.size() <= 32 && data.patientPhone.size() > 0
+        && (data.status == 'confirmed' || data.status == 'cancelled')
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500));
+    }
+
+    // Match appointments collection
+    match /appointments/{appointmentId} {
+      allow create: if isValidId(appointmentId) && isValidAppointment(incoming());
+      
+      // Individual fetch is allowed if you know the custom passcode ID
+      allow get: if isValidId(appointmentId);
+      
+      // Bulk listing of patient information is allowed for the express server acting on behalf of customers
+      allow list: if true;
+
+      // Tiered update logic with hard lock on immutable patient metadata
+      allow update: if isValidId(appointmentId)
+        && isValidAppointment(incoming())
+        && incoming().id == existing().id
+        && incoming().serviceId == existing().serviceId
+        && incoming().dentistId == existing().dentistId
+        && incoming().patientName == existing().patientName
+        && incoming().patientEmail == existing().patientEmail
+        && incoming().patientPhone == existing().patientPhone
+        && incoming().createdAt == existing().createdAt
+        && (
+          // Action: Cancel
+          (incoming().status == 'cancelled' && incoming().diff(existing()).affectedKeys().hasOnly(['status'])) ||
+          // Action: Reschedule
+          (incoming().diff(existing()).affectedKeys().hasOnly(['date', 'timeSlot', 'status']))
+        );
+
+      allow delete: if false;
+    }
+  }
+}
