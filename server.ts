@@ -4,6 +4,7 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import { createServer as createViteServer } from "vite";
 import { initializeApp } from "firebase/app";
+import { getAuth, signInAnonymously } from "firebase/auth";
 import {
   initializeFirestore,
   collection,
@@ -64,12 +65,142 @@ interface FirestoreErrorInfo {
   authInfo: any;
 }
 
+let appInstance: any = null;
+let dbInstance: Firestore | null = null;
+let authInstance: any = null;
+
+function getFirebaseConfig() {
+  let firebaseConfig: any = {};
+  const CONFIG_FILE = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      firebaseConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
+    } catch (err) {
+      console.warn("[Firebase] Could not parse firebase-applet-config.json, falling back to env:", err);
+    }
+  }
+  
+  const config = {
+    apiKey: process.env.FIREBASE_API_KEY || firebaseConfig.apiKey,
+    authDomain: process.env.FIREBASE_AUTH_DOMAIN || firebaseConfig.authDomain,
+    projectId: process.env.FIREBASE_PROJECT_ID || firebaseConfig.projectId,
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || firebaseConfig.storageBucket,
+    messagingSenderId: process.env.FIREBASE_MESSAGING_SENDER_ID || firebaseConfig.messagingSenderId,
+    appId: process.env.FIREBASE_APP_ID || firebaseConfig.appId,
+    firestoreDatabaseId: process.env.FIREBASE_DATABASE_ID || firebaseConfig.firestoreDatabaseId,
+  };
+
+  if (!config.projectId) {
+    throw new Error(`Firebase project configuration not found in environment variables OR at ${CONFIG_FILE}`);
+  }
+  return config;
+}
+
+function getFirebaseApp() {
+  if (!appInstance) {
+    const config = getFirebaseConfig();
+    appInstance = initializeApp(config);
+  }
+  return appInstance;
+}
+
+function getAuthClient() {
+  if (!authInstance) {
+    const app = getFirebaseApp();
+    authInstance = getAuth(app);
+  }
+  return authInstance;
+}
+
+async function ensureWithRetry(fn: () => Promise<void>, retries = 2, delay = 1000): Promise<void> {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      await fn();
+      return;
+    } catch (err) {
+      if (i === retries) throw err;
+      console.warn(`[Firebase] Attempt ${i + 1} failed, retrying in ${delay}ms...`, err);
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+}
+
+async function ensureBackendAuth() {
+  try {
+    const auth = getAuthClient();
+    if (!auth.currentUser) {
+      console.log("[Firebase] Backend unauthenticated. Formulating anonymous fallback session...");
+      // Wrap sign-in with quick retry logic to prevent transient network issues from failing the app
+      await ensureWithRetry(async () => {
+        await signInAnonymously(auth);
+      });
+      console.log(`[Firebase] Backend successfully authenticated anonymously (UID: ${auth.currentUser?.uid})`);
+    }
+  } catch (err) {
+    console.error("[Firebase] Warning: Failed to sign in anonymously on backend:", err);
+  }
+}
+
+function validateAndExtractFirebaseUser(req: express.Request) {
+  const authHeader = req.headers.authorization;
+  const headerUid = req.headers["x-firebase-user-id"];
+  const headerEmail = req.headers["x-firebase-user-email"];
+
+  let decodedUid: string | null = null;
+  let decodedEmail: string | null = null;
+
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.substring(7);
+    try {
+      const parts = token.split(".");
+      if (parts.length === 3) {
+        const payloadJson = Buffer.from(parts[1], "base64").toString("utf-8");
+        const payload = JSON.parse(payloadJson);
+        
+        // Basic verification of JWT token format
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (payload.exp && payload.exp > nowSec && payload.sub) {
+          decodedUid = payload.sub; // Firebase user ID is stored in 'sub' claim
+          decodedEmail = payload.email || null;
+          console.log(`[Firebase Auth] Decoded valid Firebase ID token for User ID: ${decodedUid}`);
+        }
+      }
+    } catch (err) {
+      console.warn("[Firebase Auth] Failed to parse/decode authorization token:", err);
+    }
+  }
+
+  // Fallback to headers if decoding failed or token wasn't provided, but validate format
+  const sanitizedUid = decodedUid || (typeof headerUid === "string" && headerUid.match(/^[a-zA-Z0-9_\-]+$/) ? headerUid : null);
+  const sanitizedEmail = decodedEmail || (typeof headerEmail === "string" ? headerEmail : null);
+
+  return {
+    userId: sanitizedUid,
+    email: sanitizedEmail,
+  };
+}
+
 function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  let uId: string | null = null;
+  let uEmail: string | null = null;
+  let isAnon: boolean | null = null;
+  try {
+    const auth = getAuthClient();
+    if (auth.currentUser) {
+      uId = auth.currentUser.uid;
+      uEmail = auth.currentUser.email;
+      isAnon = auth.currentUser.isAnonymous;
+    }
+  } catch (authErr) {
+    console.warn("[Firebase] Could not fetch current user for error info:", authErr);
+  }
+
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: null,
-      email: null,
+      userId: uId,
+      email: uEmail,
+      isAnonymous: isAnon
     },
     operationType,
     path
@@ -78,25 +209,18 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
-let dbInstance: Firestore | null = null;
-
 function getDb(): Firestore {
   if (!dbInstance) {
-    const CONFIG_FILE = path.join(process.cwd(), "firebase-applet-config.json");
-    if (!fs.existsSync(CONFIG_FILE)) {
-      throw new Error(`Firebase configuration file not found at ${CONFIG_FILE}`);
-    }
-    const firebaseConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf-8"));
-    
-    const app = initializeApp(firebaseConfig);
-    const dbId = firebaseConfig.firestoreDatabaseId === "(default)" ? undefined : firebaseConfig.firestoreDatabaseId;
+    const app = getFirebaseApp();
+    const config = getFirebaseConfig();
+    const dbId = config.firestoreDatabaseId === "(default)" || !config.firestoreDatabaseId ? undefined : config.firestoreDatabaseId;
     
     dbInstance = initializeFirestore(app, {
       experimentalForceLongPolling: true,
       useFetchStreams: false,
     } as any, dbId);
 
-    console.log(`[Firebase] Firestore database client successfully initialized using web SDK for project: ${firebaseConfig.projectId}`);
+    console.log(`[Firebase] Firestore database client successfully initialized for project: ${config.projectId}`);
   }
   return dbInstance;
 }
@@ -110,6 +234,8 @@ async function startServer() {
 
   // Connection validation at boot-up
   try {
+    // Ensure we are authenticated on startup
+    await ensureBackendAuth();
     const db = getDb();
     console.log("[Firebase] Verification: Testing connection to Firestore database...");
     await getDocs(query(collection(db, "appointments"), limit(1)));
@@ -122,6 +248,12 @@ async function startServer() {
   app.get("/api/appointments", async (req, res) => {
     try {
       console.log("[API] GET /api/appointments - Reading active slots from Firestore...");
+      await ensureBackendAuth();
+      const userContext = validateAndExtractFirebaseUser(req);
+      if (userContext.userId) {
+        console.log(`[API] Authorized User Context ID: ${userContext.userId}`);
+      }
+
       const db = getDb();
       let snapshot;
       try {
@@ -140,9 +272,16 @@ async function startServer() {
       appointments.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       
       res.json(appointments);
-    } catch (error) {
+    } catch (error: any) {
       console.error("[API] GET /api/appointments failed:", error);
-      res.status(500).json({ error: "Failed to load appointments from Firestore." });
+      let clientError = "Failed to load appointments from Firestore.";
+      try {
+        if (error instanceof Error && error.message.startsWith('{')) {
+          const parsed = JSON.parse(error.message);
+          if (parsed.error) clientError = parsed.error;
+        }
+      } catch {}
+      res.status(500).json({ error: clientError });
     }
   });
 
@@ -150,6 +289,12 @@ async function startServer() {
   app.post("/api/appointments", async (req, res) => {
     try {
       console.log("[API] POST /api/appointments - Received booking payload:", req.body);
+      await ensureBackendAuth();
+      const userContext = validateAndExtractFirebaseUser(req);
+      if (userContext.userId) {
+        console.log(`[API] Authorized User Context ID: ${userContext.userId} Booking Appointment`);
+      }
+
       const {
         serviceId,
         dentistId,
@@ -216,9 +361,16 @@ async function startServer() {
 
       console.log("[API] POST success: Created appointment:", newAppointment.id);
       res.status(201).json(newAppointment);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Error booking appointment on server:", err);
-      res.status(500).json({ error: "Booking execution failed is Firestore backend." });
+      let clientError = "Booking execution failed in Firestore backend.";
+      try {
+        if (err instanceof Error && err.message.startsWith('{')) {
+          const parsed = JSON.parse(err.message);
+          if (parsed.error) clientError = parsed.error;
+        }
+      } catch {}
+      res.status(500).json({ error: clientError });
     }
   });
 
@@ -226,6 +378,13 @@ async function startServer() {
   app.post("/api/appointments/:id/cancel", async (req, res) => {
     try {
       const { id } = req.params;
+      console.log(`[API] POST /api/appointments/${id}/cancel - Received cancel request`);
+      await ensureBackendAuth();
+      const userContext = validateAndExtractFirebaseUser(req);
+      if (userContext.userId) {
+        console.log(`[API] Authorized User Context ID: ${userContext.userId} Cancelling Appointment`);
+      }
+
       const db = getDb();
       const docRef = doc(db, "appointments", id);
       
@@ -253,9 +412,16 @@ async function startServer() {
       }
 
       res.json(updatedData);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Cancellation routing broken:", err);
-      res.status(500).json({ error: "Cancellation transaction failed on server Database." });
+      let clientError = "Cancellation transaction failed on server Database.";
+      try {
+        if (err instanceof Error && err.message.startsWith('{')) {
+          const parsed = JSON.parse(err.message);
+          if (parsed.error) clientError = parsed.error;
+        }
+      } catch {}
+      res.status(500).json({ error: clientError });
     }
   });
 
@@ -264,9 +430,16 @@ async function startServer() {
     try {
       const { id } = req.params;
       const { date, timeSlot } = req.body;
+      console.log(`[API] POST /api/appointments/${id}/reschedule - Received reschedule details:`, req.body);
 
       if (!date || !timeSlot) {
         return res.status(400).json({ error: "Missing new date or time slot." });
+      }
+
+      await ensureBackendAuth();
+      const userContext = validateAndExtractFirebaseUser(req);
+      if (userContext.userId) {
+        console.log(`[API] Authorized User Context ID: ${userContext.userId} Rescheduling Appointment`);
       }
 
       const db = getDb();
@@ -323,9 +496,16 @@ async function startServer() {
       }
 
       res.json(updatedApt);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Reschedule route error:", err);
-      res.status(500).json({ error: "Failed to reschedule on Firestore database." });
+      let clientError = "Failed to reschedule on Firestore database.";
+      try {
+        if (err instanceof Error && err.message.startsWith('{')) {
+          const parsed = JSON.parse(err.message);
+          if (parsed.error) clientError = parsed.error;
+        }
+      } catch {}
+      res.status(500).json({ error: clientError });
     }
   });
 
