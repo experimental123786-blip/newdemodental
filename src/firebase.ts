@@ -20,7 +20,26 @@ export const db = getFirestore(app, config.firestoreDatabaseId === '(default)' |
 export const auth = getAuth(app);
 
 const getApiUrl = (endpoint: string): string => {
-  const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+  let base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+  
+  if (!base) {
+    const isLocal = typeof window !== 'undefined' && 
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname.startsWith('192.168.'));
+    
+    if (isLocal) {
+      base = '';
+    } else if (typeof window !== 'undefined') {
+      const hostname = window.location.hostname;
+      if (hostname.endsWith('.run.app')) {
+        base = '';
+      } else {
+        base = 'https://ais-pre-7srxekufe7romobj6ggzti-126560644470.asia-southeast1.run.app';
+      }
+    } else {
+      base = 'https://ais-pre-7srxekufe7romobj6ggzti-126560644470.asia-southeast1.run.app';
+    }
+  }
+  
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   return `${base}${cleanEndpoint}`;
 };
