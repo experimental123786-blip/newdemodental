@@ -19,6 +19,11 @@ export const app = initializeApp(config);
 export const db = getFirestore(app, config.firestoreDatabaseId === '(default)' || !config.firestoreDatabaseId ? undefined : config.firestoreDatabaseId);
 export const auth = getAuth(app);
 
+const getApiUrl = (endpoint: string): string => {
+  const base = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+  const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return `${base}${cleanEndpoint}`;
+};
 
 export enum OperationType {
   CREATE = 'create',
@@ -75,7 +80,7 @@ async function getAuthHeaders(): Promise<HeadersInit> {
 export async function getAppointments(): Promise<Appointment[]> {
   try {
     const authHeaders = await getAuthHeaders();
-    const response = await fetch('/api/appointments', {
+    const response = await fetch(getApiUrl('/api/appointments'), {
       headers: authHeaders,
     });
     if (!response.ok) {
@@ -100,7 +105,7 @@ export async function createAppointment(payload: {
 }): Promise<Appointment> {
   try {
     const authHeaders = await getAuthHeaders();
-    const response = await fetch('/api/appointments', {
+    const response = await fetch(getApiUrl('/api/appointments'), {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify(payload),
@@ -128,7 +133,7 @@ export async function createAppointment(payload: {
 export async function cancelAppointment(id: string): Promise<Appointment> {
   try {
     const authHeaders = await getAuthHeaders();
-    const response = await fetch(`/api/appointments/${id}/cancel`, {
+    const response = await fetch(getApiUrl(`/api/appointments/${id}/cancel`), {
       method: 'POST',
       headers: authHeaders,
     });
@@ -147,7 +152,7 @@ export async function cancelAppointment(id: string): Promise<Appointment> {
 export async function rescheduleAppointment(id: string, date: string, timeSlot: string): Promise<Appointment> {
   try {
     const authHeaders = await getAuthHeaders();
-    const response = await fetch(`/api/appointments/${id}/reschedule`, {
+    const response = await fetch(getApiUrl(`/api/appointments/${id}/reschedule`), {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify({ date, timeSlot }),

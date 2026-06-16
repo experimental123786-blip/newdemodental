@@ -232,6 +232,20 @@ async function startServer() {
   // Middleware
   app.use(express.json());
 
+  // Enable CORS for external frontend deployments (e.g., Cloudflare Pages)
+  app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Firebase-User-Id, X-Firebase-User-Email");
+    
+    // Handle OPTIONS preflight request
+    if (req.method === "OPTIONS") {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
   // Connection validation at boot-up
   try {
     // Ensure we are authenticated on startup
